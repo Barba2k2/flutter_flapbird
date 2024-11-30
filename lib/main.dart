@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SharedPreferences.getInstance();
   runApp(const MyApp());
 }
 
@@ -10,9 +13,146 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
+    return MaterialApp(
       debugShowCheckedModeBanner: false,
-      home: GameScreen(),
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        fontFamily: 'Arial',
+      ),
+      home: const MenuScreen(),
+    );
+  }
+}
+
+class MenuScreen extends StatelessWidget {
+  const MenuScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.blue,
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'Flappy Bird',
+              style: TextStyle(
+                fontSize: 48,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 50),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 50, vertical: 20),
+              ),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const GameScreen()),
+                );
+              },
+              child: const Text(
+                'Jogar',
+                style: TextStyle(fontSize: 24),
+              ),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.orange,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 50, vertical: 20),
+              ),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const ScoreScreen()),
+                );
+              },
+              child: const Text(
+                'Pontuações',
+                style: TextStyle(fontSize: 24),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ScoreScreen extends StatefulWidget {
+  const ScoreScreen({super.key});
+
+  @override
+  State<ScoreScreen> createState() => _ScoreScreenState();
+}
+
+class _ScoreScreenState extends State<ScoreScreen> {
+  List<Map<String, dynamic>> scores = [];
+
+  @override
+  void initState() {
+    super.initState();
+    loadScores();
+  }
+
+  Future<void> loadScores() async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String>? savedScores = prefs.getStringList('scores');
+
+    if (savedScores != null) {
+      setState(() {
+        scores = savedScores.map((score) {
+          final parts = score.split(':');
+          return {
+            'score': int.parse(parts[0]),
+            'time': int.parse(parts[1]),
+            'date': parts[2],
+          };
+        }).toList();
+
+        scores.sort((a, b) => b['score'].compareTo(a['score']));
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.blue,
+      appBar: AppBar(
+        title: const Text('Melhores Pontuações'),
+        backgroundColor: Colors.green,
+      ),
+      body: scores.isEmpty
+          ? const Center(
+              child: Text(
+                'Nenhuma pontuação ainda!',
+                style: TextStyle(color: Colors.white, fontSize: 24),
+              ),
+            )
+          : ListView.builder(
+              itemCount: scores.length,
+              itemBuilder: (context, index) {
+                final score = scores[index];
+                return ListTile(
+                  title: Text(
+                    'Pontos: ${score['score']}',
+                    style: const TextStyle(color: Colors.white, fontSize: 20),
+                  ),
+                  subtitle: Text(
+                    'Tempo: ${(score['time'] / 1000).toStringAsFixed(1)}s\nData: ${score['date']}',
+                    style: const TextStyle(color: Colors.white70),
+                  ),
+                );
+              },
+            ),
     );
   }
 }
@@ -33,42 +173,132 @@ class _GameScreenState extends State<GameScreen> {
   double velocity = 3.5;
   bool gameHasStarted = false;
 
-  static List<double> barrierX = [2, 3.5];
-  static double barrierWidth = 0.5;
+  int score = 0;
+  int elapsedTime = 0;
+  late DateTime startTime;
+
+  final double birdWidth = 50;
+  final double birdHeight = 50;
+  final double barrierWidth = 50;
+  double gameSpeed = 0.02;
+
+  List<double> barrierX = [2, 3.5];
   List<List<double>> barrierHeight = [
     [0.6, 0.4],
     [0.4, 0.6],
   ];
 
+  Timer? gameTimer;
+  Timer? scoreTimer;
+
   void startGame() {
     gameHasStarted = true;
-    Timer.periodic(const Duration(milliseconds: 50), (timer) {
-      height = gravity * time * time + velocity * time;
-      setState(() {
-        birdY = initialPos - height;
-      });
+    startTime = DateTime.now();
 
-      if (birdDead()) {
-        timer.cancel();
-        gameHasStarted = false;
-        _showDialog();
-      }
+    birdY = 0;
+    initialPos = 0;
+    time = 0;
+    score = 0;
+    elapsedTime = 0;
+    barrierX = [2, 3.5];
 
-      moveMap();
+    gameTimer = Timer.periodic(
+      const Duration(milliseconds: 16),
+      (timer) {
+        height = gravity * time * time + velocity * time;
+        setState(() {
+          birdY = initialPos - height;
+          elapsedTime = DateTime.now().difference(startTime).inMilliseconds;
+          moveBarriers();
 
-      time += 0.05;
-    });
+          if (checkCollision()) {
+            timer.cancel();
+            scoreTimer?.cancel();
+            saveScore();
+            _showDialog();
+            return;
+          }
+        });
+
+        time += 0.016;
+
+        gameSpeed = 0.02 + (score / 100) * 0.01;
+      },
+    );
+
+    scoreTimer = Timer.periodic(
+      const Duration(milliseconds: 1500),
+      (timer) {
+        setState(() {
+          score++;
+        });
+      },
+    );
   }
 
-  void moveMap() {
+  final bool debugMode = true;
+
+  final double pipeWidth = 60.0;
+  final double birdSize = 50.0;
+
+  bool checkCollision() {
+    if (birdY < -0.95 || birdY > 0.95) {
+      return true;
+    }
+
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
+    final birdXInPixels = screenWidth / 2;
+    final birdYInPixels = ((birdY + 1) / 2) * screenHeight;
+
+    final birdLeft = birdXInPixels - birdSize / 2;
+    final birdRight = birdXInPixels + birdSize / 2;
+    final birdTop = birdYInPixels - birdSize / 2;
+    final birdBottom = birdYInPixels + birdSize / 2;
+
+    for (int i = 0; i < barrierX.length; i++) {
+      final pipeXInPixels = ((barrierX[i] + 1) / 2) * screenWidth;
+
+      final pipeLeft = pipeXInPixels - pipeWidth / 2;
+      final pipeRight = pipeXInPixels + pipeWidth / 2;
+
+      if (birdRight > pipeLeft && birdLeft < pipeRight) {
+        final topPipeHeight = barrierHeight[i][0] * screenHeight * 0.4;
+        final bottomPipeStartY = screenHeight * (1 - barrierHeight[i][1] * 0.4);
+
+        if (birdTop < topPipeHeight) {
+          return true;
+        }
+
+        if (birdBottom > bottomPipeStartY) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  void moveBarriers() {
     for (int i = 0; i < barrierX.length; i++) {
       setState(() {
-        barrierX[i] -= 0.05;
-      });
+        barrierX[i] -= gameSpeed;
 
-      if (barrierX[i] < -1.5) {
-        barrierX[i] += 3;
-      }
+        if (barrierX[i] < -2) {
+          barrierX[i] += 4;
+
+          double minHeight = 0.3;
+          double maxHeight = 0.5;
+          double gap = 0.3;
+
+          double topHeight = minHeight +
+              (maxHeight - minHeight) *
+                  (DateTime.now().millisecondsSinceEpoch % 100) /
+                  100;
+
+          barrierHeight[i] = [topHeight, 1.0 - topHeight - gap];
+        }
+      });
     }
   }
 
@@ -79,30 +309,27 @@ class _GameScreenState extends State<GameScreen> {
     });
   }
 
-  bool birdDead() {
-    if (birdY < -1 || birdY > 1) {
-      return true;
-    }
+  Future<void> saveScore() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final List<String> savedScores = prefs.getStringList('scores') ?? [];
 
-    for (int i = 0; i < barrierX.length; i++) {
-      if (barrierX[i] <= 0.25 &&
-          barrierX[i] + barrierWidth >= -0.25 &&
-          (birdY <= -1 + barrierHeight[i][0] ||
-              birdY >= 1 - barrierHeight[i][1])) {
-        return true;
-      }
+      final now = DateTime.now();
+      final scoreString =
+          '$score:$elapsedTime:${now.day}/${now.month}/${now.year}';
+
+      savedScores.add(scoreString);
+      await prefs.setStringList('scores', savedScores);
+    } catch (e) {
+      debugPrint('Erro ao salvar pontuação: $e');
     }
-    return false;
   }
 
   void resetGame() {
-    setState(() {
-      birdY = 0;
-      gameHasStarted = false;
-      time = 0;
-      initialPos = birdY;
-      barrierX = [2, 3.5];
-    });
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const GameScreen()),
+    );
   }
 
   void _showDialog() {
@@ -111,20 +338,57 @@ class _GameScreenState extends State<GameScreen> {
       barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text("Game Over"),
-          content: const Text("Quer jogar novamente?"),
+          backgroundColor: Colors.brown,
+          title: const Text(
+            "Game Over",
+            style: TextStyle(color: Colors.white),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                "Pontuação: $score",
+                style: const TextStyle(color: Colors.white),
+              ),
+              Text(
+                "Tempo: ${(elapsedTime / 1000).toStringAsFixed(1)}s",
+                style: const TextStyle(color: Colors.white),
+              ),
+            ],
+          ),
           actions: [
             TextButton(
-              child: const Text("Jogar"),
+              child: const Text(
+                "Menu",
+                style: TextStyle(color: Colors.white),
+              ),
               onPressed: () {
-                Navigator.of(context).pop();
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (context) => const MenuScreen()),
+                  (Route<dynamic> route) => false,
+                );
+              },
+            ),
+            TextButton(
+              child: const Text(
+                "Jogar Novamente",
+                style: TextStyle(color: Colors.white),
+              ),
+              onPressed: () {
                 resetGame();
               },
-            )
+            ),
           ],
         );
       },
     );
+  }
+
+  @override
+  void dispose() {
+    gameTimer?.cancel();
+    scoreTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -141,53 +405,111 @@ class _GameScreenState extends State<GameScreen> {
         body: Column(
           children: [
             Expanded(
-              flex: 3,
-              child: Container(
-                color: Colors.blue,
-                child: Center(
-                  child: Stack(
-                    children: [
-                      Container(
-                        alignment: Alignment(0, birdY),
-                        child: const Bird(),
-                      ),
-                      Container(
-                        alignment: Alignment(barrierX[0], 1.1),
-                        child: Barrier(
-                          size: barrierHeight[0][0],
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Container(color: Colors.blue),
+                  AnimatedContainer(
+                    duration: Duration.zero,
+                    alignment: Alignment(0, birdY),
+                    child: SizedBox(
+                      width: birdWidth,
+                      height: birdHeight,
+                      child: const Bird(),
+                    ),
+                  ),
+                  ...barrierX
+                      .asMap()
+                      .entries
+                      .map((entry) {
+                        int i = entry.key;
+                        double x = entry.value;
+                        return [
+                          AnimatedContainer(
+                            duration: Duration.zero,
+                            alignment: Alignment(x, -1.1),
+                            child: Barrier(
+                              size: barrierHeight[i][0],
+                              isBottom: false,
+                            ),
+                          ),
+                          AnimatedContainer(
+                            duration: Duration.zero,
+                            alignment: Alignment(x, 1.1),
+                            child: Barrier(
+                              size: barrierHeight[i][1],
+                              isBottom: true,
+                            ),
+                          ),
+                        ];
+                      })
+                      .expand((x) => x)
+                      .toList(),
+                  if (debugMode)
+                    Positioned(
+                      top: 50,
+                      right: 20,
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              'Bird Y: ${birdY.toStringAsFixed(2)}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                              ),
+                            ),
+                            Text(
+                              'Barrier X: [${barrierX.map((x) => x.toStringAsFixed(2)).join(", ")}]',
+                              style: const TextStyle(
+                                color: Colors.white,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      Container(
-                        alignment: Alignment(barrierX[0], -1.1),
-                        child: Barrier(
-                          size: barrierHeight[0][1],
-                        ),
-                      ),
-                      Container(
-                        alignment: Alignment(barrierX[1], 1.1),
-                        child: Barrier(
-                          size: barrierHeight[1][0],
-                        ),
-                      ),
-                      Container(
-                        alignment: Alignment(barrierX[1], -1.1),
-                        child: Barrier(
-                          size: barrierHeight[1][1],
-                        ),
-                      ),
-                      Container(
-                        alignment: const Alignment(0, -0.3),
-                        child: Text(
-                          gameHasStarted ? '' : 'TOQUE PARA COMEÇAR',
+                    ),
+                  Positioned(
+                    top: 50,
+                    left: 20,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Pontos: $score',
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 20,
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
-                      ),
-                    ],
+                        Text(
+                          'Tempo: ${(elapsedTime / 1000).toStringAsFixed(1)}s',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
+                  if (!gameHasStarted)
+                    const Center(
+                      child: Text(
+                        'TOQUE PARA COMEÇAR',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 25,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           ],
@@ -203,8 +525,8 @@ class Bird extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 60,
-      height: 60,
+      width: 50,
+      height: 50,
       decoration: const BoxDecoration(
         color: Colors.yellow,
         shape: BoxShape.circle,
@@ -215,8 +537,13 @@ class Bird extends StatelessWidget {
 
 class Barrier extends StatelessWidget {
   final double size;
+  final bool isBottom;
 
-  const Barrier({super.key, required this.size});
+  const Barrier({
+    super.key,
+    required this.size,
+    required this.isBottom,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -225,7 +552,10 @@ class Barrier extends StatelessWidget {
       height: size * MediaQuery.of(context).size.height * 0.4,
       decoration: BoxDecoration(
         color: Colors.green,
-        border: Border.all(width: 4, color: Colors.green.shade800),
+        border: Border.all(
+          width: 4,
+          color: Colors.green.shade800,
+        ),
         borderRadius: BorderRadius.circular(15),
       ),
     );
